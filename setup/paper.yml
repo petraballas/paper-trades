@@ -5,28 +5,45 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+  pages: write
+  id-token: write
 concurrency:
   group: paper-bot
   cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - name: checkout data branch
         run: |
-          git fetch --depth=1 origin +refs/heads/data:refs/remotes/origin/data && git worktree add -B data data origin/data
+          git fetch --depth=1 origin +refs/heads/data:refs/remotes/origin/data
+          git worktree add -B data data origin/data
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: run bot
+      - name: run bot (virtual money, public market data only)
         run: node bot.js data/state.json
-      - name: commit state
+      - name: commit state to data branch
         run: |
           cd data
           git config user.name "paper-bot"
           git config user.email "paper-bot@users.noreply.github.com"
           git add state.json
-          git commit -m "state $(date -u +%FT%TZ)" || exit 0
-          for i in 1 2 3; do git push origin data && break; sleep 3; done
+          git commit -q -m "state $(date -u +%FT%TZ)" || echo "no changes"
+          for i in 1 2 3; do git push -q origin data && break; sleep 3; done
+      - name: build site
+        run: |
+          mkdir -p _site
+          cp -r index.html app.js style.css manifest.webmanifest icons .nojekyll _site/
+          cp data/state.json _site/state.json
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4

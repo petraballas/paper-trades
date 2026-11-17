@@ -25,13 +25,12 @@ async function getState(u, hdr) {
 const API = 'https://api.github.com/repos/petraballas/paper-trades/contents/state.json?ref=data';
 let apiAt = 0;
 async function loadState() {
-  let j = null;
-  try { j = await getState(DATA[0] + '?t=' + Date.now()); } catch (e) { }
-  // raw CDN can serve a stale copy for a few minutes → fall back to the GitHub API (rate-limited, so at most every 5 min)
-  if ((!j || Date.now() - (j.lastRun || 0) > 12 * 6e4) && Date.now() - apiAt > 5 * 6e4) {
-    apiAt = Date.now(); try { const k = await getState(API + '&t=' + Date.now(), { Accept: 'application/vnd.github.raw+json' }); if (!j || (k.lastRun || 0) > (j.lastRun || 0)) j = k; } catch (e) { }
+  // same-origin copy (deployed by the bot every run) and raw branch copy — take the fresher one
+  const got = await Promise.allSettled([getState(DATA[1] + '?t=' + Date.now()), getState(DATA[0] + '?t=' + Date.now())]);
+  let j = null; for (const g of got) if (g.status === 'fulfilled' && g.value && (!j || (g.value.lastRun || 0) > (j.lastRun || 0))) j = g.value;
+  if ((!j || Date.now() - (j.lastRun || 0) > 15 * 6e4) && Date.now() - apiAt > 5 * 6e4) { // last resort: GitHub API (rate-limited)
+    apiAt = Date.now(); try { const k = await getState(API + '&t=' + Date.now()); const v = JSON.parse(decodeURIComponent(escape(atob(k.content.replace(/\s/g, ''))))); if (!j || (v.lastRun || 0) > (j.lastRun || 0)) j = v; } catch (e) { }
   }
-  if (!j) try { j = await getState(DATA[1] + '?t=' + Date.now()); } catch (e) { }
   if (j && (!S.st || (j.lastRun || 0) >= (S.st.lastRun || 0))) S.st = j;
   if (S.st) { S.loadedAt = Date.now(); render(); syncLive(); }
   else { $('#botSt').textContent = 'нет данных бота — повторяю…'; render(); }
