@@ -47,6 +47,8 @@ jobs:
         with:
           node-version: '20'
       - name: loop (virtual money, public market data only)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           END=$(( $(date +%s) + 340*60 ))
           i=0
@@ -58,6 +60,8 @@ jobs:
                 if git rev-parse -q --verify HEAD >/dev/null; then git commit -q --amend -m "state $(date -u +%FT%TZ)"; else git commit -q -m "state"; fi && \
                 git push -q -f origin HEAD:data ) || echo "push failed ($i)"
             fi
+            # refresh the same-origin copy on the site every ~3 min (cheap artifact deploy)
+            [ $((i % 3)) -eq 1 ] && (gh workflow run pages.yml --ref main >/dev/null 2>&1 || echo "pages dispatch failed")
             dt=$(( $(date +%s) - t0 )); [ $dt -lt 60 ] && sleep $(( 60 - dt ))
           done
           echo "iterations: $i"
