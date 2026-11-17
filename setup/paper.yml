@@ -10,6 +10,10 @@ on:
         description: 'continuation of a previous loop (skip the guard)'
         required: false
         default: 'false'
+      minutes:
+        description: 'loop length in minutes (max ~345)'
+        required: false
+        default: '340'
 permissions:
   contents: write
   actions: write
@@ -50,7 +54,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          END=$(( $(date +%s) + 340*60 ))
+          M="${{ inputs.minutes }}"; [ -z "$M" ] && M=340
+          END=$(( $(date +%s) + M*60 ))
           i=0
           while [ "$(date +%s)" -lt "$END" ]; do
             t0=$(date +%s); i=$((i+1))
