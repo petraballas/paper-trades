@@ -10,7 +10,7 @@ const pct = (v, d = 2) => v == null || !isFinite(v) ? '—' : (v > 0 ? '+' : v <
 const cls = v => v > 0 ? 'up' : v < 0 ? 'down' : 'mut';
 const dt = t => new Date(t).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 function ago(ms) { const m = Math.round((Date.now() - ms) / 60000); if (m < 1) return 'только что'; if (m < 60) return m + ' мин назад'; const h = Math.floor(m / 60); if (h < 48) return h + ' ч ' + (m % 60) + ' мин назад'; return Math.floor(h / 24) + ' дн назад'; }
-const TYPE_RU = { breakout: 'Пробой', bounce: 'Отскок', pullback: 'Откат' };
+const TYPE_RU = { breakout: 'Пробой', bounce: 'Отскок', pullback: 'Откат', smc: 'SMC' };
 const TF_RU = { '15m': '15м', '1h': '1ч', '4h': '4ч' };
 const RES_RU = { TP2: 'TP2 ✓', TP1: 'TP1', 'TP1+BE': 'TP1 + БУ', BE: 'Безубыток', SL: 'Стоп', LIQ: 'Ликвидация' };
 const stars = n => '★'.repeat(n) + '<span class="dim">' + '★'.repeat(5 - n) + '</span>';
@@ -84,7 +84,7 @@ function posCard(p) {
   const l = lastPx(p), u = upnl(p), roe = p.margin ? u / p.margin * 100 : 0, L = p.dir === 'long';
   const st = p.tp1Hit ? '<span class="tag ok">TP1 ✓ · стоп в БУ</span>' : '';
   return `<div class="pos glass" data-id="${p.id}">
-    <div class="hd"><span class="sym">${esc(p.base)}</span><span class="tag ${p.dir}">${L ? 'Лонг' : 'Шорт'} 20x</span><span class="tag">${TYPE_RU[p.type] || esc(p.type)} · ${TF_RU[p.tf] || esc(p.tf)}</span><span class="stars">${stars(p.strength)}</span>${st}
+    <div class="hd"><span class="sym">${esc(p.base)}</span><span class="tag ${p.dir}">${L ? 'Лонг' : 'Шорт'} ${p.lev || 20}x</span>${p.riskPct ? `<span class="tag">риск ${p.riskPct}%</span>` : ''}<span class="tag">${TYPE_RU[p.type] || esc(p.type)} · ${TF_RU[p.tf] || esc(p.tf)}</span><span class="stars">${stars(p.strength)}</span>${st}
       <div class="pnl ${cls(u)}" data-u="${p.id}">${usd(u, 1)}<small>${pct(roe, 1)} ROE</small></div></div>
     <div class="kv">
       <div><span>Вход</span>${fmtP(p.fill)}</div><div><span>Цена</span><b class="px" data-px="${esc(p.base)}">${fmtP(l)}</b></div>
@@ -93,7 +93,7 @@ function posCard(p) {
       <div><span>TP1 · 50%</span><b class="up">${fmtP(p.tp1)}</b></div><div><span>TP2</span><b class="up">${fmtP(p.tp2)}</b></div>
       <div><span>Ликвидация</span>${fmtP(p.liq)}</div>
     </div>${bar(p, l)}
-    <div class="why">Открыта ${dt(p.filledAt)} · риск ${usd(p.risk)} · ${esc(p.why || '')}</div></div>`;
+    ${p.sizeWhy ? `<div class="why"><b>⚙ ${esc(p.sizeWhy)}</b></div>` : ''}<div class="why">Открыта ${dt(p.filledAt)} · риск ${usd(p.risk)} · ${esc(p.why || '')}</div></div>`;
 }
 function renderOpen() {
   const a = S.st.positions || []; $('#cOpen').textContent = a.length;
@@ -102,10 +102,10 @@ function renderOpen() {
 function renderPend() {
   const a = S.st.pending || []; $('#cPend').textContent = a.length;
   $('#pend').innerHTML = a.length ? a.map(o => { const l = lastPx(o), d = l ? (o.entry / l - 1) * 100 : null; return `<div class="pos glass">
-    <div class="hd"><span class="sym">${esc(o.base)}</span><span class="tag ${o.dir}">${o.dir === 'long' ? 'Лонг' : 'Шорт'} лимит</span><span class="tag">${TYPE_RU[o.type] || ''} · ${TF_RU[o.tf] || ''}</span><span class="stars">${stars(o.strength)}</span>
+    <div class="hd"><span class="sym">${esc(o.base)}</span><span class="tag ${o.dir}">${o.dir === 'long' ? 'Лонг' : 'Шорт'} лимит ${o.lev || 20}x</span>${o.riskPct ? `<span class="tag">риск ${o.riskPct}%</span>` : ''}<span class="tag">${TYPE_RU[o.type] || ''} · ${TF_RU[o.tf] || ''}</span><span class="stars">${stars(o.strength)}</span>
     <div class="pnl mut" style="font-size:14px">до ${dt(o.expires)}<small>до входа ${d == null ? '—' : pct(d)}</small></div></div>
     <div class="kv"><div><span>Вход</span>${fmtP(o.entry)}</div><div><span>Цена</span><b class="px" data-px="${esc(o.base)}">${fmtP(l)}</b></div><div><span>Стоп</span><b class="down">${fmtP(o.sl)}</b></div><div><span>TP1 / TP2</span><b class="up">${fmtP(o.tp1)}</b> / <b class="up">${fmtP(o.tp2)}</b></div></div>
-    <div class="why">Создан ${dt(o.createdAt)} · ${esc(o.why || '')}</div></div>`; }).join('') : '<div class="empty glass">Нет отложенных ордеров.</div>';
+    ${o.sizeWhy ? `<div class="why"><b>⚙ ${esc(o.sizeWhy)}</b></div>` : ''}<div class="why">Создан ${dt(o.createdAt)} · ${esc(o.why || '')}</div></div>`; }).join('') : '<div class="empty glass">Нет отложенных ордеров.</div>';
 }
 function renderHist() {
   const a = S.st.closed || []; $('#cHist').textContent = a.length;

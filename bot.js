@@ -3,9 +3,9 @@
    Takes the same signals as the signals board (core.js is the board's signal engine, byte-for-byte),
    simulates fills / SL / TP on public 1m-5m candles and writes state.json. */
 const fs = require('fs');
-const { analyze, detect, HTF, tfMs } = require('./core.js');
+const { analyze, detect, detectSMC, HTF, tfMs } = require('./core.js');
 
-const RULES = { START: 1000, RISK: 0.02, LEV: 20, MIN_STR: 4, MAX_OPEN: 10, FEE: 0.00055, MMR: 0.005, PENDING_BARS: 24, TP1_PART: 0.5 };
+const RULES = { START: 1000, RISK: 0.02, RISK_BY_STR: { 4: 0.02, 5: 0.03 }, RISK_MIN: 0.01, RISK_MAX: 0.03, LEVS: [5, 10, 20, 25, 50], LEV: 50, MARGIN_CAP: 0.09, LIQ_X: 1.5, SETUPS: ['breakout', 'bounce', 'pullback', 'smc'], MIN_STR: 4, MAX_OPEN: 10, FEE: 0.00055, MMR: 0.005, PENDING_BARS: 24, TP1_PART: 0.5 };
 const CFG = { TOP: 30, TFS: ['15m', '1h', '4h'], CONC: 4, TIMEOUT: 12000 };
 const STABLE = /^(USDC|USDE|FDUSD|TUSD|DAI|BUSD|USDD|PYUSD|USD1|EUR|XAUT|PAXG)$/;
 const STATE = process.argv[2] || 'state.json';
@@ -130,7 +130,9 @@ const st = load();
 const dirN = p => p.dir === 'long' ? 1 : -1;
 const fee = notional => notional * RULES.FEE;
 const r8 = x => +(+x).toPrecision(10);
-function liqPrice(entry, dir) { return dir === 'long' ? entry * (1 - 1 / RULES.LEV + RULES.MMR) : entry * (1 + 1 / RULES.LEV - RULES.MMR); }
+// leverage is per position: new ones use RULES.LEV, older positions/orders without .lev were opened at 20x and keep it
+const levOf = p => p.lev || 20;
+function liqPrice(entry, dir, lev = RULES.LEV) { return dir === 'long' ? entry * (1 - 1 / lev + RULES.MMR) : entry * (1 + 1 / lev - RULES.MMR); }
 function unreal(p) { return p.last == null ? 0 : p.qty * (p.last - p.fill) * dirN(p); }
 function equity() { return st.balance + st.positions.reduce((s, p) => s + unreal(p), 0); }
 function usedMargin() { return st.positions.reduce((s, p) => s + p.margin, 0) + st.pending.reduce((s, o) => s + o.margin, 0); }
@@ -150,7 +152,7 @@ function finish(p, reason, t) {
 function openFromOrder(o, price, t) {
   const notional = o.qty * price, f = fee(notional);
   st.balance -= f;
-  const p = Object.assign({}, o, { status: 'open', fill: r8(price), filledAt: t, fees: f, realized: -f, qty0: o.qty, tp1Hit: false, be: false, liq: r8(liqPrice(price, o.dir)), margin: notional / RULES.LEV, last: price });
+  const p = Object.assign({}, o, { status: 'open', fill: r8(price), filledAt: t, fees: f, realized: -f, qty0: o.qty, tp1Hit: false, be: false, lev: levOf(o), liq: r8(liqPrice(price, o.dir, levOf(o))), margin: notional / levOf(o), last: price });
   delete p.expires; st.positions.push(p); log('OPEN', p.base, p.dir, p.tf, p.type, 'qty', p.qty, '@', price);
   return p;
 }
@@ -169,7 +171,7 @@ function stepPos(p, c, fillCandle) {
   if (!p.tp1Hit && (L ? c.h >= p.tp1 : c.l <= p.tp1)) {
     const q = r8(p.qty0 * RULES.TP1_PART); closePart(p, q, p.tp1, 'TP1', t);
     p.tp1Hit = true; p.be = true; p.sl = p.fill; p.tp1At = t;
-    p.margin = p.qty * p.fill / RULES.LEV; log('TP1', p.base);
+    p.margin = p.qty * p.fill / levOf(p); log('TP1', p.base);
   }
   if (p.tp1Hit && (L ? c.h >= p.tp2 : c.l <= p.tp2)) { closePart(p, p.qty, p.tp2, 'TP2', t); finish(p, 'TP2', t); return true; }
   return false;
@@ -208,28 +210,51 @@ async function scan(top) {
       const { bars } = await klines(coin.base, tf, 300); const a = analyze(bars, tf); if (!a) return; an[coin.base + tf] = a;
       const h = an[coin.base + HTF[tf]];
       const htfTrend = tf === '4h' ? (a.e50[a.n] > a.e50[a.n - 10] ? 1 : -1) * (a.trend !== 0 ? 1 : 0) : h ? h.trend : 0;
-      const d = detect(a, tf, coin, htfTrend).sort((p, q) => q.strength - p.strength || q.rr - p.rr);
+      const d = detect(a, tf, coin, htfTrend).filter(s => RULES.SETUPS.includes(s.type)).sort((p, q) => q.strength - p.strength || q.rr - p.rr);
       if (d.length) found.push(d[0]);
+      if (RULES.SETUPS.includes('smc')) { const m = detectSMC(a, tf, coin, htfTrend); if (m.length) found.push(m[0]); }
     });
   }
   return found;
 }
 
+/* Dynamic sizing (only for signals that already passed the 4★ bar — sizing never lowers the quality bar or tries to fill slots).
+   Risk by strength: 4★ 2%, 5★ 3%; ×0.5 after 3 losses in a row or drawdown > 10%; clamped to 1–3% of equity.
+   Leverage: lowest of LEVS where margin ≤ 9% of equity (keeps room if more good setups come, up to 10)
+   and liquidation is at least 1.5× the stop distance from entry. Otherwise the trade is skipped. */
+function sizing(s, eq) {
+  let riskPct = RULES.RISK_BY_STR[Math.min(5, s.strength)] || RULES.RISK; const notes = [];
+  const last3 = st.closed.slice(0, 3); // newest first
+  if (last3.length === 3 && last3.every(t => (t.pnl || 0) < 0)) { riskPct *= 0.5; notes.push('×0.5 после 3 убытков подряд'); }
+  else { const peak = Math.max(RULES.START, ...st.equity.map(x => x.e)); const dd = 1 - eq / peak; if (dd > 0.10) { riskPct *= 0.5; notes.push(`×0.5: просадка ${(dd * 100).toFixed(1)}%`); } }
+  riskPct = Math.min(RULES.RISK_MAX, Math.max(RULES.RISK_MIN, riskPct));
+  const dist = Math.abs(s.entry - s.sl), risk$ = eq * riskPct, qty = risk$ / dist, notional = qty * s.entry, distPct = dist / s.entry;
+  for (const lev of RULES.LEVS) {
+    const liqDist = 1 / lev - RULES.MMR; // distance to liquidation as a fraction of entry
+    if (liqDist < RULES.LIQ_X * distPct) return { ok: false, skip: 'liq', why: lev === RULES.LEVS[0] ? `стоп ${(distPct * 100).toFixed(2)}%: даже при ${lev}x ликвидация ближе 1.5× стопа` : `стоп ${(distPct * 100).toFixed(2)}%: при ${lev}x ликвидация ближе 1.5× стопа, а на меньшем плече маржа > 9% эквити` };
+    const margin = notional / lev;
+    if (margin <= RULES.MARGIN_CAP * eq) return { ok: true, lev, riskPct, risk$, qty, margin, why: `${Math.min(5, s.strength)}★ → риск ${+(riskPct * 100).toFixed(2)}%, плечо ${lev}x${notes.length ? ' (' + notes.join(', ') + ')' : ''}` };
+  }
+  return { ok: false, skip: 'margin', why: `маржа > ${RULES.MARGIN_CAP * 100}% эквити даже при ${RULES.LEVS[RULES.LEVS.length - 1]}x` };
+}
 function act(signals, tickMap) {
   const fresh = signals.filter(s => s.strength >= RULES.MIN_STR).sort((a, b) => b.strength - a.strength || b.t - a.t || b.rr - a.rr);
   for (const s of fresh) {
     const key = s.key + '@' + s.t;
     if (st.seen[key]) continue;
     const base = s.coin.base;
-    if (st.positions.some(p => p.base === base) || st.pending.some(o => o.base === base)) { continue; }
+    const same = b => b.replace(/^1000+/, '') === base.replace(/^1000+/, ''); // PEPE vs 1000PEPE across providers = same coin
+    if (st.positions.some(p => same(p.base)) || st.pending.some(o => same(o.base))) { continue; }
     if (st.positions.length + st.pending.length >= RULES.MAX_OPEN) { st.seen[key] = { t: NOW, skip: 'max10' }; continue; }
-    const eq = equity(), risk$ = eq * RULES.RISK, dist = Math.abs(s.entry - s.sl);
-    const qty = risk$ / dist, margin = qty * s.entry / RULES.LEV, free = eq - usedMargin();
+    const eq = equity();
+    const sz = sizing(s, eq);
+    if (!sz.ok) { st.seen[key] = { t: NOW, skip: sz.skip }; log('SKIP', sz.skip, base, s.dir, s.tf, s.type, sz.why); continue; }
+    const { lev, riskPct, qty, margin } = sz, free = eq - usedMargin();
     if (margin > free) { st.seen[key] = { t: NOW, skip: 'margin' }; log('SKIP margin', base, margin.toFixed(2), free.toFixed(2)); continue; }
     st.seen[key] = { t: NOW, id: st.nextId };
     const last = tickMap[base] ? tickMap[base].last : s.coin.last, L = s.dir === 'long';
     const o = { id: st.nextId++, key, base, tf: s.tf, type: s.type, dir: s.dir, strength: s.strength, why: s.why, tags: s.tags, signalAt: s.t,
-      entry: r8(s.entry), sl: r8(s.sl), sl0: r8(s.sl), tp1: r8(s.tp1), tp2: r8(s.tp2), rr: +s.rr.toFixed(2), qty: r8(qty), risk: +risk$.toFixed(2),
+      entry: r8(s.entry), sl: r8(s.sl), sl0: r8(s.sl), tp1: r8(s.tp1), tp2: r8(s.tp2), rr: +s.rr.toFixed(2), qty: r8(qty), risk: +sz.risk$.toFixed(2), lev, riskPct: +(riskPct * 100).toFixed(2), sizeWhy: sz.why,
       margin, createdAt: NOW, cursor: Math.floor(NOW / 6e4) * 6e4 + 6e4, expires: s.t + RULES.PENDING_BARS * tfMs(s.tf), status: 'pending' };
     if (L ? last <= s.entry : last >= s.entry) { const p = openFromOrder(o, last, NOW); p.cursor = o.cursor; }  // market already at / better than entry → fill now
     else { o.last = last; st.pending.push(o); log('PENDING', base, s.dir, s.tf, '@', s.entry); }
