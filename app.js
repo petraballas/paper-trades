@@ -28,7 +28,7 @@ async function loadState() {
   // same-origin copy (deployed by the bot every run) and raw branch copy — take the fresher one
   const got = await Promise.allSettled([getState(DATA[1] + '?t=' + Date.now()), getState(DATA[0] + '?t=' + Date.now())]);
   let j = null; for (const g of got) if (g.status === 'fulfilled' && g.value && (!j || (g.value.lastRun || 0) > (j.lastRun || 0))) j = g.value;
-  if ((!j || Date.now() - (j.lastRun || 0) > 15 * 6e4) && Date.now() - apiAt > 5 * 6e4) { // last resort: GitHub API (rate-limited)
+  if ((!j || Date.now() - (j.lastRun || 0) > 2.5 * 6e4) && Date.now() - apiAt > 3 * 6e4) { // raw CDN caches ~5 min → GitHub API for fresher data (60 req/h limit → max every 3 min)
     apiAt = Date.now(); try { const k = await getState(API + '&t=' + Date.now()); const v = JSON.parse(decodeURIComponent(escape(atob(k.content.replace(/\s/g, ''))))); if (!j || (v.lastRun || 0) > (j.lastRun || 0)) j = v; } catch (e) { }
   }
   if (j && (!S.st || (j.lastRun || 0) >= (S.st.lastRun || 0))) S.st = j;
@@ -189,6 +189,6 @@ document.querySelectorAll('#rng button').forEach(b => b.onclick = () => { docume
 window.addEventListener('resize', () => drawCurve());
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadState(); if (!liveOk()) startLive(); } });
 loadState();
-setInterval(() => { if (!document.hidden) loadState(); }, 60e3);
+setInterval(() => { if (!document.hidden) loadState(); }, 30e3);
 setInterval(frame, 1000);
 setInterval(() => { if (!document.hidden && watchList().length && !liveOk() && LIVE.ws === null) startLive(); setPill(); if (S.st) $('#botSt').textContent = 'бот: ' + ago(S.st.lastRun) + (S.st.source ? ' · данные ' + S.st.source : '') + ' · запусков ' + (S.st.runs || 0); }, 10e3);

@@ -93,6 +93,34 @@ async function klines(base, tf, limit = 300, extra = []) {
   throw err;
 }
 
+
+/* all closed 1m candles from `from` to now, paginated (covers gaps up to ~3 days) */
+const RANGE = {
+  async okx(id, from) { // /candles has the latest 300; /history-candles pages back in time
+    let out = [], after = '', guard = 0;
+    while (guard++ < 45) {
+      const ep = guard === 1 ? 'candles' : 'history-candles';
+      const j = await getJSON(`https://www.okx.com/api/v5/market/${ep}?instId=${id}&bar=1m&limit=${guard === 1 ? 300 : 100}${after ? '&after=' + after : ''}`);
+      if (j.code && j.code !== '0') throw new Error('API ' + j.msg);
+      const b = j.data.map(r => ({ t: +r[0], o: +r[1], h: +r[2], l: +r[3], c: +r[4] }));
+      if (!b.length) break; out = out.concat(b); const oldest = b[b.length - 1].t; if (oldest <= from) break; after = oldest;
+    }
+    return out;
+  },
+  async bybit(id, from) { let out = [], end = NOW, g = 0; while (g++ < 6) { const j = await getJSON(`https://api.bybit.com/v5/market/kline?category=linear&symbol=${id}&interval=1&limit=1000&start=${from}&end=${end}`); if (j.retCode !== 0) throw new Error('API ' + j.retMsg); const b = j.result.list.map(r => ({ t: +r[0], o: +r[1], h: +r[2], l: +r[3], c: +r[4] })); if (!b.length) break; out = out.concat(b); const o = b[b.length - 1].t; if (o <= from) break; end = o - 1; } return out; },
+  async gate(id, from) { let out = [], f = Math.floor(from / 1000), g = 0; while (g++ < 6) { const to = Math.min(Math.floor(NOW / 1000), f + 1999 * 60); const j = await getJSON(`https://api.gateio.ws/api/v4/futures/usdt/candlesticks?contract=${id}&interval=1m&from=${f}&to=${to}`); out = out.concat(j.map(r => ({ t: r.t * 1000, o: +r.o, h: +r.h, l: +r.l, c: +r.c }))); if (to >= Math.floor(NOW / 1000)) break; f = to + 60; } return out; },
+  async binance(id, from) { let out = [], st = from, g = 0; while (g++ < 6) { const j = await getJSON(`https://data-api.binance.vision/api/v3/klines?symbol=${id}&interval=1m&limit=1000&startTime=${st}`); const b = j.map(r => ({ t: +r[0], o: +r[1], h: +r[2], l: +r[3], c: +r[4] })); out = out.concat(b); if (b.length < 1000) break; st = b[b.length - 1].t + 6e4; } return out; },
+};
+async function range1m(base, from) {
+  const ord = [PROV, ...ALL.filter(k => k !== PROV && !DEAD[k]), 'binance'].filter(Boolean);
+  let err; for (const k of ord) {
+    try { const raw = await retry(() => RANGE[k](P[k].id(base), from)); const m = new Map(); raw.forEach(b => m.set(b.t, b)); const b = [...m.values()].sort((x, y) => x.t - y.t);
+      if (!b.length) throw new Error('empty'); if (b[0].t > from + 6e4 && NOW - from < 3 * 864e5) throw new Error('gap not covered'); return { bars: b, src: k }; }
+    catch (e) { err = e; }
+  }
+  throw err;
+}
+
 /* ---------- state ---------- */
 function load() {
   try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch (e) { }
@@ -160,10 +188,9 @@ function cancel(o, why, t) { st.pending = st.pending.filter(x => x !== o); st.ca
 async function track(tickMap) {
   const items = [...st.positions, ...st.pending];
   await pool(items, CFG.CONC, async it => {
-    const from = it.cursor || NOW, gap = NOW - from;
-    const tf = gap <= 280 * 6e4 ? '1m' : gap <= 280 * 3e5 ? '5m' : '15m', ms = { '1m': 6e4, '5m': 3e5, '15m': 9e5 }[tf];
-    const need = Math.min(300, Math.ceil(gap / ms) + 3);
-    let bars; try { bars = (await klines(it.base, tf, need, ['binance'])).bars; } catch (e) { log('track fail', it.base, e.message); return; }
+    const from = it.cursor || NOW, ms = 6e4;
+    if (NOW - from < ms) { const tk = tickMap[it.base]; if (tk) it.last = tk.last; return; }
+    let bars; try { bars = (await range1m(it.base, from)).bars; } catch (e) { log('track fail', it.base, e.message); return; }
     for (const c of bars) {
       if (c.t < from || c.t + ms > NOW) continue; // closed candles after cursor only
       it.cursor = c.t + ms;
@@ -211,7 +238,8 @@ function act(signals, tickMap) {
 
 function stats() {
   const eq = equity();
-  st.equity.push({ t: NOW, e: +eq.toFixed(2), b: +st.balance.toFixed(2) });
+  const pt = { t: NOW, e: +eq.toFixed(2), b: +st.balance.toFixed(2) }, lp = st.equity[st.equity.length - 1], lp2 = st.equity[st.equity.length - 2];
+  if (lp && lp2 && lp.t - lp2.t < 4.5 * 6e4) st.equity[st.equity.length - 1] = pt; else st.equity.push(pt); // ~5-min resolution
   if (st.equity.length > 4000) { // thin out: keep every 3rd of the oldest half
     const half = st.equity.length >> 1; st.equity = st.equity.slice(0, half).filter((_, i) => i % 3 === 0).concat(st.equity.slice(half));
   }
