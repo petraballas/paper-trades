@@ -6,18 +6,22 @@ const fs = require('fs');
 const { analyze, detect, detectSMC, HTF, tfMs } = require('./core.js');
 
 const RULES = { START: 1000, RISK: 0.02, RISK_BY_STR: { 4: 0.02, 5: 0.03 }, RISK_MIN: 0.01, RISK_MAX: 0.03, LEVS: [5, 10, 20, 25, 50], LEV: 50, MARGIN_CAP: 0.09, LIQ_X: 1.5, SETUPS: ['breakout', 'bounce', 'pullback', 'smc'], MIN_STR: 4, MAX_OPEN: 10, FEE: 0.00055, MMR: 0.005, PENDING_BARS: 24, TP1_PART: 0.5 };
-const CFG = { TOP: 30, TFS: ['15m', '1h', '4h'], CONC: 4, TIMEOUT: 12000 };
-const STABLE = /^(USDC|USDE|FDUSD|TUSD|DAI|BUSD|USDD|PYUSD|USD1|EUR|XAUT|PAXG)$/;
+const CFG = { TOP: 100, TFS: ['15m', '1h', '4h'], CONC: 8, TIMEOUT: 12000 }; // TOP = universe size (USDT perps by 24h turnover)
+const STABLE = /^(USDT|USDC|USDE|FDUSD|TUSD|DAI|BUSD|USDD|PYUSD|USD1|USDS|USDG|USDP|USDQ|USDR|USDX|USD0|RLUSD|BFUSD|LUSD|SUSD|GUSD|FRAX|CRVUSD|GHO|EUR|EURC|EURI|XAUT|PAXG)$/;
 const STATE = process.argv[2] || 'state.json';
 const NOW = Date.now();
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
+/* per-host request throttle: keeps us under public rate limits (Bybit 600/5s, OKX candles 40/2s, Gate 200/10s) */
+const RL_MS = { 'api.bybit.com': 25, 'www.okx.com': 60, 'api.gateio.ws': 55 }, RL_NEXT = {};
+async function throttle(url) { let h = ''; try { h = new URL(url).host; } catch (e) { } const gap = RL_MS[h]; if (!gap) return; const now = Date.now(), at = Math.max(now, RL_NEXT[h] || 0); RL_NEXT[h] = at + gap; if (at > now) await new Promise(r => setTimeout(r, at - now)); }
 async function getJSON(url, ms = CFG.TIMEOUT) {
+  await throttle(url);
   const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms);
   try { const r = await fetch(url, { signal: ac.signal, headers: { 'User-Agent': 'paper-trades-bot' } }); if (!r.ok) throw new Error('HTTP ' + r.status); return await r.json(); }
   finally { clearTimeout(t); }
 }
-async function retry(fn) { for (let a = 0; ; a++) { try { return await fn(); } catch (e) { if (a < 2) { await new Promise(r => setTimeout(r, 1000 * (a + 1))); continue; } throw e; } } }
+async function retry(fn) { for (let a = 0; ; a++) { try { return await fn(); } catch (e) { if (a < 2 && !/HTTP 40[04]|API/.test(e.message)) { await new Promise(r => setTimeout(r, 1000 * (a + 1))); continue; } throw e; } } }
 async function pool(items, n, fn) { let i = 0; const run = async () => { while (i < items.length) { const k = i++; try { await fn(items[k], k); } catch (e) { } } }; await Promise.all(Array.from({ length: n }, run)); }
 
 /* ---------- providers (same endpoints and mapping as the board) ---------- */
@@ -203,18 +207,34 @@ async function track(tickMap) {
   });
 }
 
+/* Universe of up to CFG.TOP coins × 3 TFs. To keep each 60s iteration fast, 1h/4h are rescanned only when a new candle
+   of that TF has closed (and for the first SETTLE ms after the close, in case the exchange finalises the bar late);
+   otherwise their signals and trends are reused from st.scanCache. 15m is scanned every iteration. */
+const SETTLE = 3 * 6e4;
 async function scan(top) {
-  const an = {}, found = [];
+  const an = {}, found = [], trend = {}; st.scanCache = st.scanCache || {}; const scanned = [];
   for (const tf of CFG.TFS.slice().reverse()) { // 4h → 1h → 15m (higher timeframe first, as on the board)
+    const ms = tfMs(tf), bar = Math.floor(NOW / ms), c = st.scanCache[tf];
+    const fresh = tf !== '15m' && c && c.bar === bar && NOW - bar * ms > SETTLE && (NOW - c.at) < ms && c.n >= Math.min(top.length, CFG.TOP) * 0.8;
+    if (fresh) { // reuse
+      Object.assign(trend, Object.fromEntries(Object.entries(c.trends).map(([k, v]) => [k + tf, v])));
+      const inTop = Object.fromEntries(top.map(x => [x.base, x]));
+      for (const sg of c.sigs) if (inTop[sg.coin.base]) found.push(Object.assign({}, sg, { coin: inTop[sg.coin.base] }));
+      continue;
+    }
+    const sigs = [], trends = {}; scanned.push(tf);
     await pool(top, CFG.CONC, async coin => {
       const { bars } = await klines(coin.base, tf, 300); const a = analyze(bars, tf); if (!a) return; an[coin.base + tf] = a;
-      const h = an[coin.base + HTF[tf]];
-      const htfTrend = tf === '4h' ? (a.e50[a.n] > a.e50[a.n - 10] ? 1 : -1) * (a.trend !== 0 ? 1 : 0) : h ? h.trend : 0;
+      trends[coin.base] = a.trend; trend[coin.base + tf] = a.trend;
+      const htfTrend = tf === '4h' ? (a.e50[a.n] > a.e50[a.n - 10] ? 1 : -1) * (a.trend !== 0 ? 1 : 0) : (trend[coin.base + HTF[tf]] || 0);
       const d = detect(a, tf, coin, htfTrend).filter(s => RULES.SETUPS.includes(s.type)).sort((p, q) => q.strength - p.strength || q.rr - p.rr);
-      if (d.length) found.push(d[0]);
-      if (RULES.SETUPS.includes('smc')) { const m = detectSMC(a, tf, coin, htfTrend); if (m.length) found.push(m[0]); }
+      if (d.length) sigs.push(d[0]);
+      if (RULES.SETUPS.includes('smc')) { const m = detectSMC(a, tf, coin, htfTrend); if (m.length) sigs.push(m[0]); }
     });
+    found.push(...sigs);
+    if (tf !== '15m') st.scanCache[tf] = { bar, at: NOW, n: Object.keys(trends).length, trends, sigs: sigs.map(sg => Object.assign({}, sg, { coin: { base: sg.coin.base, last: sg.coin.last } })) };
   }
+  st.scanned = scanned;
   return found;
 }
 
@@ -284,7 +304,9 @@ function stats() {
   const tickMap = Object.fromEntries(tickers.map(x => [x.base, x]));
   await track(tickMap);
   let signals = [];
+  const tTrack = Date.now() - t0;
   if (top.length) { try { signals = await scan(top); } catch (e) { log('scan fail', e.message); } }
+  st.scanMs = Date.now() - t0 - tTrack; st.trackMs = tTrack;
   act(signals, tickMap);
   st.runs++; st.lastRun = NOW; st.source = PROV ? P[PROV].name : null; st.universe = top.map(c => c.base);
   st.lastSignals = signals.map(s => ({ base: s.coin.base, tf: s.tf, type: s.type, dir: s.dir, strength: s.strength, entry: r8(s.entry), sl: r8(s.sl), tp1: r8(s.tp1), tp2: r8(s.tp2), t: s.t }));
