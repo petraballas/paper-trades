@@ -170,7 +170,7 @@ async function track(tickMap) {
       if (it.status === 'pending') { const r = stepOrder(it, c); if (r === 'filled') { const p = st.positions.find(x => x.id === it.id); if (!p) return; it = p; it.cursor = c.t + ms; continue; } if (r === 'done') return; }
       else if (stepPos(it, c, false)) return;
     }
-    const tk = tickMap[it.base]; if (it.status === 'open') it.last = tk ? tk.last : bars[bars.length - 1].c;
+    const tk = tickMap[it.base]; it.last = tk ? tk.last : bars[bars.length - 1].c;
   });
 }
 
@@ -205,7 +205,7 @@ function act(signals, tickMap) {
       entry: r8(s.entry), sl: r8(s.sl), sl0: r8(s.sl), tp1: r8(s.tp1), tp2: r8(s.tp2), rr: +s.rr.toFixed(2), qty: r8(qty), risk: +risk$.toFixed(2),
       margin, createdAt: NOW, cursor: Math.floor(NOW / 6e4) * 6e4 + 6e4, expires: s.t + RULES.PENDING_BARS * tfMs(s.tf), status: 'pending' };
     if (L ? last <= s.entry : last >= s.entry) { const p = openFromOrder(o, last, NOW); p.cursor = o.cursor; }  // market already at / better than entry → fill now
-    else { st.pending.push(o); log('PENDING', base, s.dir, s.tf, '@', s.entry); }
+    else { o.last = last; st.pending.push(o); log('PENDING', base, s.dir, s.tf, '@', s.entry); }
   }
 }
 

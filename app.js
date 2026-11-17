@@ -179,6 +179,7 @@ function frame() {
     el.textContent = fmtP(p); if (o != null && p !== o) { el.classList.remove('tk-up', 'tk-dn'); void el.offsetWidth; el.classList.add(p > o ? 'tk-up' : 'tk-dn'); } });
   S.st.positions.forEach(p => { if (!dirty.has(p.base)) return; const el = document.querySelector(`[data-u="${p.id}"]`); if (!el) return; const u = upnl(p), roe = p.margin ? u / p.margin * 100 : 0;
     el.className = 'pnl ' + cls(u); el.innerHTML = usd(u, 1) + '<small>' + pct(roe, 1) + ' ROE</small>'; });
+  if (S.st.pending.some(o => dirty.has(o.base))) renderPend();
   dirty.forEach(b => prevPx[b] = S.px[b]); dirty.clear();
   renderKpis(); drawCurve(); setPill();
 }
