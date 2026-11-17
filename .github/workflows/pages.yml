@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           mkdir -p _site && cp -r index.html app.js style.css manifest.webmanifest icons .nojekyll _site/
-          curl -sf "https://raw.githubusercontent.com/${{ github.repository }}/data/state.json" -o _site/state.json || true
+          git fetch -q --depth=1 origin +refs/heads/data:refs/remotes/origin/data && git show origin/data:state.json > _site/state.json || true
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
