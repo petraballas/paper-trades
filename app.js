@@ -1,6 +1,6 @@
 'use strict';
 /* Paper demo account viewer. Reads state.json written by the bot (GitHub Actions). Virtual money only. */
-const DATA = ['https://raw.githubusercontent.com/petraballas/paper-trades/data/state.json', 'data/state.json'];
+const DATA = ['https://raw.githubusercontent.com/petraballas/paper-trades/data/state.json', 'state.json'];
 const START = 1000;
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -18,17 +18,23 @@ const dirN = p => p.dir === 'long' ? 1 : -1;
 
 const S = { st: null, px: {}, range: 0, histN: 30, loadedAt: 0 };
 
+async function getState(u, hdr) {
+  const ac = new AbortController(); const tm = setTimeout(() => ac.abort(), 12000);
+  try { const r = await fetch(u, { cache: 'no-store', signal: ac.signal, headers: hdr || {} }); if (!r.ok) throw new Error(r.status); return await r.json(); } finally { clearTimeout(tm); }
+}
+const API = 'https://api.github.com/repos/petraballas/paper-trades/contents/state.json?ref=data';
+let apiAt = 0;
 async function loadState() {
-  for (const u of DATA) {
-    try {
-      const ac = new AbortController(); const tm = setTimeout(() => ac.abort(), 12000);
-      const r = await fetch(u + '?t=' + Date.now(), { cache: 'no-store', signal: ac.signal }); clearTimeout(tm);
-      if (!r.ok) throw new Error(r.status); const j = await r.json();
-      if (!S.st || (j.lastRun || 0) >= (S.st.lastRun || 0)) S.st = j;
-      S.loadedAt = Date.now(); render(); syncLive(); return;
-    } catch (e) { }
+  let j = null;
+  try { j = await getState(DATA[0] + '?t=' + Date.now()); } catch (e) { }
+  // raw CDN can serve a stale copy for a few minutes → fall back to the GitHub API (rate-limited, so at most every 5 min)
+  if ((!j || Date.now() - (j.lastRun || 0) > 12 * 6e4) && Date.now() - apiAt > 5 * 6e4) {
+    apiAt = Date.now(); try { const k = await getState(API + '&t=' + Date.now(), { Accept: 'application/vnd.github.raw+json' }); if (!j || (k.lastRun || 0) > (j.lastRun || 0)) j = k; } catch (e) { }
   }
-  if (!S.st) { $('#botSt').textContent = 'бот ещё не запускался'; render(); }
+  if (!j) try { j = await getState(DATA[1] + '?t=' + Date.now()); } catch (e) { }
+  if (j && (!S.st || (j.lastRun || 0) >= (S.st.lastRun || 0))) S.st = j;
+  if (S.st) { S.loadedAt = Date.now(); render(); syncLive(); }
+  else { $('#botSt').textContent = 'нет данных бота — повторяю…'; render(); }
 }
 
 /* ---------- derived ---------- */
