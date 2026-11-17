@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Paper — демо-счёт по сигналам</title>
+<meta name="description" content="Виртуальный демо-счёт $1000, который торгует сигналы с доски Signals. Не финансовый совет.">
+<meta name="theme-color" content="#05060d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Paper">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="style.css?v=1">
+</head>
+<body>
+<div class="blobs"><i></i><i></i><i></i></div>
+<div class="app">
+  <header class="top glass">
+    <div class="brand"><img src="icons/icon-192.png" alt=""><div><b>PAPER</b><span class="dim"> · демо-счёт</span><div class="sub dim" id="botSt">загрузка…</div></div></div>
+    <div class="topr"><span class="pill live" id="live">○ подключение…</span><a class="btn" href="https://petraballas.github.io/signals-board/">← Сигналы</a></div>
+  </header>
+
+  <section class="hero glass">
+    <div class="lbl">Эквити (виртуальные $)</div>
+    <div class="big" id="kEq">—</div>
+    <div class="row2"><span id="kPnl" class="mut">—</span><span class="dim">·</span><span>сегодня <b id="kToday">—</b></span></div>
+    <canvas id="eqc"></canvas>
+    <div class="seg" id="rng"><button data-r="1">1Д</button><button data-r="7">7Д</button><button data-r="30">30Д</button><button data-r="0" class="on">Всё</button></div>
+  </section>
+
+  <section class="kpis">
+    <div class="kpi glass"><div class="lbl">Баланс</div><div class="v" id="kBal">—</div></div>
+    <div class="kpi glass"><div class="lbl">Свободная маржа</div><div class="v" id="kFree">—</div><div class="s dim" id="kUsed"></div></div>
+    <div class="kpi glass"><div class="lbl">Винрейт</div><div class="v" id="kWr">—</div><div class="s dim" id="kWl"></div></div>
+    <div class="kpi glass"><div class="lbl">Profit factor</div><div class="v" id="kPf">—</div><div class="s dim" id="kAvg"></div></div>
+    <div class="kpi glass"><div class="lbl">Макс. просадка</div><div class="v down" id="kDd">—</div><div class="s dim" id="kDd2"></div></div>
+    <div class="kpi glass"><div class="lbl">Сделок</div><div class="v" id="kN">—</div><div class="s dim" id="kOpen"></div></div>
+  </section>
+
+  <h2>Открытые позиции <span class="cnt" id="cOpen">0</span></h2>
+  <div id="open" class="list"></div>
+
+  <h2>Ожидают входа <span class="cnt" id="cPend">0</span></h2>
+  <div id="pend" class="list"></div>
+
+  <h2>История сделок <span class="cnt" id="cHist">0</span></h2>
+  <div class="glass tblw"><table class="tbl" id="hist"><thead><tr><th>Закрыта</th><th>Монета</th><th class="hm">Сетап</th><th>Итог</th><th class="r">PnL</th><th class="r hm">R</th></tr></thead><tbody></tbody></table></div>
+
+  <section class="glass rules">
+    <h3>Как работает бот</h3>
+    <ul>
+      <li>Берёт сигналы с <a href="https://petraballas.github.io/signals-board/">доски Signals</a> — тот же расчёт, только сила от <b>4★</b>.</li>
+      <li>Риск <b>2%</b> от текущего эквити на сделку, плечо <b>20x</b> (изолированная маржа), не больше <b>10</b> сделок сразу, одна позиция на монету.</li>
+      <li>Вход по цене сигнала: если рынок уже там или лучше — сразу, иначе лимитка ждёт до 24 свечей сигнала и отменяется, если цена раньше дошла до стопа или TP1.</li>
+      <li>На TP1 закрывает 50% и переносит стоп в безубыток, остаток — до TP2 или безубытка.</li>
+      <li>Проверка каждые ~5 минут по минутным свечам; если в одной свече задеты и стоп и тейк — считается стоп. Комиссия 0,055% за вход и выход, фондинг не учитывается.</li>
+    </ul>
+    <p class="disc">⚠️ Это виртуальный демо-счёт: деньги ненастоящие, бот не подключён ни к какой бирже и не знает ключей. Результаты симуляции не гарантируют таких же в реальной торговле. Не является финансовой рекомендацией.</p>
+  </section>
+</div>
+<script src="app.js?v=1" defer></script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+name: paper-bot
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: paper-bot
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: checkout data branch
+        run: |
+          git fetch --depth=1 origin +refs/heads/data:refs/remotes/origin/data && git worktree add -B data data origin/data
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: run bot
+        run: node bot.js data/state.json
+      - name: commit state
+        run: |
+          cd data
+          git config user.name "paper-bot"
+          git config user.email "paper-bot@users.noreply.github.com"
+          git add state.json
+          git commit -m "state $(date -u +%FT%TZ)" || exit 0
+          for i in 1 2 3; do git push origin data && break; sleep 3; done
